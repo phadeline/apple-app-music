@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var navigateToPlaylists = false
 
     var body: some View {
+        
         NavigationStack {
             ZStack {
                 Theme.bodyBackground.ignoresSafeArea()

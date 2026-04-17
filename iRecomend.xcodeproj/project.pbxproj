@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0A54A5202F91AA2600926CD2 /* MusicKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A54A51F2F91AA2600926CD2 /* MusicKit.framework */; };
 		0A54A5792F91C2A700926CD2 /* iRecomendApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A54A5782F91C2A700926CD2 /* iRecomendApp.swift */; };
+		0AE879812F92D258008E8DFD /* MusicKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A54A51F2F91AA2600926CD2 /* MusicKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -36,9 +37,28 @@
 		0AF109032F906CF0002FFDD8 /* iRecomendUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iRecomendUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		0AE879832F92D818008E8DFD /* Exceptions for "iRecomend" folder in "iRecomend" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"icons8-music-100.imageset/Contents.json",
+				"icons8-music-100.imageset/icons8-music-100.png",
+				"icons8-music-100.imageset/icons8-music-note-94.png",
+				Info.plist,
+				README.md,
+				"Views/icons8-music-100.png",
+				"Views/icons8-music-note-94.png",
+			);
+			target = 0AF108E92F906CED002FFDD8 /* iRecomend */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0AF108EC2F906CED002FFDD8 /* iRecomend */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0AE879832F92D818008E8DFD /* Exceptions for "iRecomend" folder in "iRecomend" target */,
+			);
 			path = iRecomend;
 			sourceTree = "<group>";
 		};
@@ -67,6 +87,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0AE879812F92D258008E8DFD /* MusicKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -119,6 +140,7 @@
 			buildPhases = (
 				0AF108E62F906CED002FFDD8 /* Sources */,
 				0AF108E72F906CED002FFDD8 /* Frameworks */,
+				0AE879822F92D817008E8DFD /* Resources */,
 			);
 			buildRules = (
 			);
@@ -225,6 +247,13 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		0AE879822F92D817008E8DFD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		0AF108F72F906CF0002FFDD8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -399,8 +428,11 @@
 		0AF1090E2F906CF0002FFDD8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon 1";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = "AppIcon 1";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = "AppIcon 1";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -460,8 +492,11 @@
 		0AF1090F2F906CF0002FFDD8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon 1";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = "AppIcon 1";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = "AppIcon 1";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;

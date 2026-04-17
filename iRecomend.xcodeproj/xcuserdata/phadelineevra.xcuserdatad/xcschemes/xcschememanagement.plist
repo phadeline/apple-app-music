@@ -4,10 +4,35 @@
 <dict>
 	<key>SchemeUserState</key>
 	<dict>
-		<key>iRecomend.xcscheme_^#shared#^_</key>
+		<key>iRecomend 1.xcscheme_^#shared#^_</key>
 		<dict>
+			<key>isShown</key>
+			<true/>
 			<key>orderHint</key>
 			<integer>0</integer>
+		</dict>
+		<key>iRecomend.xcscheme</key>
+		<dict>
+			<key>isShown</key>
+			<false/>
+		</dict>
+	</dict>
+	<key>SuppressBuildableAutocreation</key>
+	<dict>
+		<key>0AF108E92F906CED002FFDD8</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>0AF108F82F906CF0002FFDD8</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>0AF109022F906CF0002FFDD8</key>
+		<dict>
+			<key>primary</key>
+			<true/>
 		</dict>
 	</dict>
 </dict>

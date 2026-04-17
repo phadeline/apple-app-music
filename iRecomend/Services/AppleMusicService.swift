@@ -7,6 +7,27 @@ private struct RawTracksResponse: Decodable {
     let data: [RawTrackItem]
 }
 
+private struct RawLibraryPlaylistsResponse: Decodable {
+    let data: [Item]
+    struct Item: Decodable {
+        let id: String
+        let attributes: Attributes?
+        struct Attributes: Decodable {
+            let name: String
+        }
+    }
+}
+
+private struct RawCatalogSearchResponse: Decodable {
+    let results: Results
+    struct Results: Decodable {
+        let songs: SongsContainer?
+        struct SongsContainer: Decodable {
+            let data: [RawTrackItem]
+        }
+    }
+}
+
 private struct RawTrackItem: Decodable {
     let id: String
     let attributes: Attributes?
@@ -79,16 +100,46 @@ actor AppleMusicService {
     func fetchLibraryPlaylists(limit: Int = 25) async throws -> [PlaylistModel] {
         var request = MusicLibraryRequest<Playlist>()
         request.limit = limit
-
         let response = try await request.response()
+
+        #if os(macOS)
+        // On macOS the MusicKit IDs are local DB IDs that don't work with the HTTP API.
+        // Fetch HTTP library IDs separately and match by name so addTrack can use them.
+        let httpIDs = (try? await fetchLibraryPlaylistHTTPIDs(limit: limit)) ?? [:]
         return response.items.map { playlist in
             PlaylistModel(
                 id: playlist.id.rawValue,
+                addToPlaylistID: httpIDs[playlist.name] ?? playlist.id.rawValue,
                 name: playlist.name,
                 genreHints: Self.extractGenreHints(from: playlist.name)
             )
         }
+        #else
+        return response.items.map { playlist in
+            PlaylistModel(
+                id: playlist.id.rawValue,
+                addToPlaylistID: playlist.id.rawValue,
+                name: playlist.name,
+                genreHints: Self.extractGenreHints(from: playlist.name)
+            )
+        }
+        #endif
     }
+
+    #if os(macOS)
+    /// Returns a name → HTTP library playlist ID map using the raw /me/library/playlists endpoint.
+    private func fetchLibraryPlaylistHTTPIDs(limit: Int) async throws -> [String: String] {
+        guard let url = URL(string: "https://api.music.apple.com/v1/me/library/playlists?limit=\(limit)") else {
+            return [:]
+        }
+        let response = try await MusicDataRequest(urlRequest: URLRequest(url: url)).response()
+        let decoded = try JSONDecoder().decode(RawLibraryPlaylistsResponse.self, from: response.data)
+        return Dictionary(uniqueKeysWithValues: decoded.data.compactMap { item in
+            guard let name = item.attributes?.name, !name.isEmpty else { return nil }
+            return (name, item.id)
+        })
+    }
+    #endif
 
     func fetchTracks(for playlistID: String) async throws -> [RecommendedTrack] {
         #if os(macOS)
@@ -243,7 +294,8 @@ actor AppleMusicService {
     func fetchGenreRecommendations(
         for track: RecommendedTrack,
         excludingIDs: Set<String>,
-        excludingTitles: Set<String>
+        excludingTitles: Set<String>,
+        page: Int = 0
     ) async throws -> [RecommendedTrack] {
         // On macOS, genres aren't loaded upfront. Fetch them lazily for this one track.
         #if os(macOS)
@@ -266,44 +318,75 @@ actor AppleMusicService {
         let genreTerm = Self.searchTerm(for: track.genreNames)
         #endif
 
-        // Two concurrent API calls: one by genre, one by artist
+        // Fetch primary (genre + artist) and 2 random international storefronts concurrently
+        let pageSize = 25
+        let intlOffset = (page % 4) * pageSize
+        let intlStorefronts = Array(Self.alternativeStorefronts.shuffled().prefix(2))
+
         var genreRequest = MusicCatalogSearchRequest(term: genreTerm, types: [Song.self])
-        genreRequest.limit = 25
+        genreRequest.limit = pageSize
+        genreRequest.offset = page * pageSize
 
         var artistRequest = MusicCatalogSearchRequest(term: track.artistName, types: [Song.self])
-        artistRequest.limit = 25
+        artistRequest.limit = pageSize
+        artistRequest.offset = page * pageSize
 
-        async let genreResponse = genreRequest.response()
-        async let artistResponse = artistRequest.response()
-        let (genreResult, artistResult) = try await (genreResponse, artistResponse)
+        let frozenGenreRequest = genreRequest
+        let frozenArtistRequest = artistRequest
+        async let genreResponse = frozenGenreRequest.response()
+        async let artistResponse = frozenArtistRequest.response()
+        async let intlTracks = withTaskGroup(of: [RecommendedTrack].self) { group in
+            for storefront in intlStorefronts {
+                group.addTask { await self.fetchRawFromStorefront(storefront: storefront, term: genreTerm, limit: pageSize, offset: intlOffset) }
+            }
+            var all: [RecommendedTrack] = []
+            for await batch in group { all.append(contentsOf: batch) }
+            return all
+        }
+
+        let (genreResult, artistResult, internationalTracks) = try await (genreResponse, artistResponse, intlTracks)
 
         let sourceTitle = track.title.lowercased()
+        let sourceGenres = Set(track.genreNames.map { $0.lowercased() })
 
-        // 2 songs from the same artist — exclude source track, used IDs, and used titles
+        // Artist picks: 2 from same artist (primary storefront only, shuffled)
         var chosenTitles = excludingTitles.union([sourceTitle])
-        var artistPicks: [Song] = []
-        for song in artistResult.songs {
+        var artistPicks: [RecommendedTrack] = []
+        for song in artistResult.songs.shuffled() {
             guard artistPicks.count < 2 else { break }
             let t = song.title.lowercased()
             guard song.id.rawValue != track.id,
                   !excludingIDs.contains(song.id.rawValue),
                   !chosenTitles.contains(t) else { continue }
-            artistPicks.append(song)
+            artistPicks.append(RecommendedTrack(
+                id: song.id.rawValue, title: song.title, artistName: song.artistName,
+                previewURL: song.previewAssets?.first?.url,
+                artworkURL: song.artwork?.url(width: 300, height: 300),
+                genreNames: Array(song.genreNames)
+            ))
             chosenTitles.insert(t)
         }
 
-        // 8 songs from genre — different artist, scored by genre overlap for closest similarity
-        let artistPickIDs = Set(artistPicks.map { $0.id.rawValue })
-        let sourceGenres = Set(track.genreNames.map { $0.lowercased() })
-
-        // Filter candidates then rank by how many genres they share with the source track
-        let genreCandidates = genreResult.songs
-            .filter { song in
-                song.id.rawValue != track.id &&
-                song.artistName != track.artistName &&
-                !excludingIDs.contains(song.id.rawValue) &&
-                !artistPickIDs.contains(song.id.rawValue) &&
-                !chosenTitles.contains(song.title.lowercased())
+        // Genre pool: merge primary + international, deduplicate, shuffle, then sort by overlap
+        let primaryGenreTracks = genreResult.songs.map { song in
+            RecommendedTrack(
+                id: song.id.rawValue, title: song.title, artistName: song.artistName,
+                previewURL: song.previewAssets?.first?.url,
+                artworkURL: song.artwork?.url(width: 300, height: 300),
+                genreNames: Array(song.genreNames)
+            )
+        }
+        let artistPickIDs = Set(artistPicks.map { $0.id })
+        var seenIDs = Set<String>()
+        let genrePool = (primaryGenreTracks + internationalTracks)
+            .filter { seenIDs.insert($0.id).inserted }
+            .shuffled() // shuffle before sorting so equal-overlap entries are randomised
+            .filter { rec in
+                rec.id != track.id &&
+                rec.artistName != track.artistName &&
+                !excludingIDs.contains(rec.id) &&
+                !artistPickIDs.contains(rec.id) &&
+                !chosenTitles.contains(rec.title.lowercased())
             }
             .sorted { a, b in
                 let aOverlap = Set(a.genreNames.map { $0.lowercased() }).intersection(sourceGenres).count
@@ -311,25 +394,69 @@ actor AppleMusicService {
                 return aOverlap > bOverlap
             }
 
-        var genrePicks: [Song] = []
-        for song in genreCandidates {
+        var genrePicks: [RecommendedTrack] = []
+        for rec in genrePool {
             guard genrePicks.count < 8 else { break }
-            let t = song.title.lowercased()
+            let t = rec.title.lowercased()
             guard !chosenTitles.contains(t) else { continue }
-            genrePicks.append(song)
+            genrePicks.append(rec)
             chosenTitles.insert(t)
         }
 
-        return (artistPicks + genrePicks).map { song in
-            RecommendedTrack(
-                id: song.id.rawValue,
-                title: song.title,
-                artistName: song.artistName,
-                previewURL: song.previewAssets?.first?.url,
-                artworkURL: song.artwork?.url(width: 300, height: 300),
-                genreNames: Array(song.genreNames)
-            )
+        let result = artistPicks + genrePicks
+        if !result.isEmpty { return result }
+
+        // All pools exhausted — broaden to remaining international storefronts
+        return await fetchFromAlternativeStorefronts(
+            term: genreTerm,
+            excludingIDs: excludingIDs,
+            page: page
+        )
+    }
+
+    // Storefronts to try when the primary storefront is exhausted
+    private static let alternativeStorefronts = [
+        "gb", "au", "ca", "fr", "de", "jp", "br", "kr", "mx", "es",
+        "it", "nl", "se", "no", "dk", "fi", "pt", "pl", "be", "at",
+        "ch", "nz", "sg", "in", "id", "ph", "th", "my", "vn", "tw",
+        "hk", "cn", "ru", "tr", "sa", "ae", "eg", "za", "ng", "ke",
+        "ar", "cl", "co", "pe", "ve", "cz", "ro", "hu", "sk", "hr",
+        "ua", "il", "pk", "bd", "lk", "gh", "tz", "et", "dz", "ma"
+    ]
+
+    func addTrack(catalogID: String, toPlaylistID playlistID: String) async throws {
+        guard let url = URL(string: "https://api.music.apple.com/v1/me/library/playlists/\(playlistID)/tracks") else {
+            throw MusicServiceError.invalidRequest
         }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["data": [["id": catalogID, "type": "songs"]]]
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        _ = try await MusicDataRequest(urlRequest: urlRequest).response()
+    }
+
+    private func fetchRawFromStorefront(storefront: String, term: String, limit: Int, offset: Int) async -> [RecommendedTrack] {
+        let encodedTerm = term.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? term
+        guard let url = URL(string: "https://api.music.apple.com/v1/catalog/\(storefront)/search?term=\(encodedTerm)&types=songs&limit=\(limit)&offset=\(offset)") else { return [] }
+        guard let response = try? await MusicDataRequest(urlRequest: URLRequest(url: url)).response(),
+              let decoded = try? JSONDecoder().decode(RawCatalogSearchResponse.self, from: response.data) else { return [] }
+        return decoded.results.songs?.data.compactMap { makeRecommendedTrack(from: $0) } ?? []
+    }
+
+    private func fetchFromAlternativeStorefronts(
+        term: String,
+        excludingIDs: Set<String>,
+        page: Int
+    ) async -> [RecommendedTrack] {
+        let offset = (page % 4) * 25
+        var results: [RecommendedTrack] = []
+        for storefront in Self.alternativeStorefronts {
+            guard results.count < 10 else { break }
+            let tracks = await fetchRawFromStorefront(storefront: storefront, term: term, limit: 25, offset: offset)
+            results.append(contentsOf: tracks.filter { !excludingIDs.contains($0.id) })
+        }
+        return Array(results.prefix(10))
     }
 
     /// Converts genre names into a catalog search term, substituting vague genres with
@@ -352,11 +479,14 @@ actor AppleMusicService {
 
 enum MusicServiceError: LocalizedError {
     case notAuthorized
+    case invalidRequest
 
     var errorDescription: String? {
         switch self {
         case .notAuthorized:
             return "Apple Music access is required to continue."
+        case .invalidRequest:
+            return "Could not build the request."
         }
     }
 }

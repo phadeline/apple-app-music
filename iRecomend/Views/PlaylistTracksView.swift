@@ -10,6 +10,7 @@ struct PlaylistTracksView: View {
 
     @State private var visibleCards: Set<String> = []
     @State private var currentIndex = 0
+    @State private var trackToAdd: RecommendedTrack? = nil
 
     private var currentTrack: RecommendedTrack? {
         guard viewModel.playlistTracks.indices.contains(currentIndex) else { return nil }
@@ -54,11 +55,14 @@ struct PlaylistTracksView: View {
         #endif
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                if !viewModel.playlistTracks.isEmpty {
+                if viewModel.playingTrackID != nil {
                     Button("Stop") { viewModel.stopPreview() }
                         .foregroundColor(Theme.cardGradientStart)
                 }
             }
+        }
+        .sheet(item: $trackToAdd) { track in
+            PlaylistPickerView(track: track, currentPlaylistID: playlist.id, viewModel: viewModel)
         }
         .task {
             await viewModel.loadPlaylistTracks(for: playlist)
@@ -94,7 +98,7 @@ struct PlaylistTracksView: View {
                     TrackCard(
                         track: track,
                         isVisible: visibleCards.contains(track.id),
-                        onPlay: { viewModel.playPreview(for: track) }
+                        onAdd: { trackToAdd = track }
                     )
                     .padding(.horizontal, 24)
                     .tag(index)
@@ -142,7 +146,9 @@ struct PlaylistTracksView: View {
                 TrackCard(
                     track: track,
                     isVisible: visibleCards.contains(track.id),
-                    onPlay: { viewModel.playPreview(for: track) }
+                    isPlaying: viewModel.playingTrackID == track.id,
+                    onPlay: { viewModel.playPreview(for: track) },
+                    onAdd: { trackToAdd = track }
                 )
                 .frame(maxWidth: 400)
                 .onAppear {
@@ -188,6 +194,8 @@ struct PlaylistTracksView: View {
                 let isLoading = viewModel.loadingRecommendationsFor.contains(track.id)
 
                 // Section header
+                let pageIdx = viewModel.recommendationPageIndex[track.id] ?? 0
+                let totalPages = (viewModel.recommendationHistory(for: track.id))
                 HStack(alignment: .bottom) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Because you're listening to")
@@ -196,19 +204,50 @@ struct PlaylistTracksView: View {
                         Text("Genre: \"\(genre)\" ")
                             .font(.system(size: 20, weight: .bold))
                             .foregroundColor(.primary)
+                        if totalPages > 1 {
+                            Text("Page \(pageIdx + 1) of \(totalPages)")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
                     }
                     Spacer()
-                    Button {
-                        Task { await viewModel.refreshRecommendations(for: track) }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(Theme.cardGradientStart)
-                            .padding(10)
-                            .background(Theme.cardGradientStart.opacity(0.12))
-                            .clipShape(Circle())
+                    HStack(spacing: 8) {
+                        Button {
+                            viewModel.goBackInHistory(for: track)
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(viewModel.canGoBack(for: track) ? Theme.cardGradientStart : Color.gray.opacity(0.3))
+                                .padding(10)
+                                .background(Theme.cardGradientStart.opacity(viewModel.canGoBack(for: track) ? 0.12 : 0.05))
+                                .clipShape(Circle())
+                        }
+                        .disabled(!viewModel.canGoBack(for: track))
+
+                        Button {
+                            viewModel.goForwardInHistory(for: track)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(viewModel.canGoForward(for: track) ? Theme.cardGradientStart : Color.gray.opacity(0.3))
+                                .padding(10)
+                                .background(Theme.cardGradientStart.opacity(viewModel.canGoForward(for: track) ? 0.12 : 0.05))
+                                .clipShape(Circle())
+                        }
+                        .disabled(!viewModel.canGoForward(for: track))
+
+                        Button {
+                            Task { await viewModel.refreshRecommendations(for: track) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundColor(Theme.cardGradientStart)
+                                .padding(10)
+                                .background(Theme.cardGradientStart.opacity(0.12))
+                                .clipShape(Circle())
+                        }
+                        .disabled(isLoading)
                     }
-                    .disabled(isLoading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
@@ -225,7 +264,12 @@ struct PlaylistTracksView: View {
                 } else if let recs {
                     VStack(spacing: 12) {
                         ForEach(recs) { rec in
-                            RecommendationRow(track: rec, onPlay: { viewModel.playPreview(for: rec) })
+                            RecommendationRow(
+                                track: rec,
+                                isPlaying: viewModel.playingTrackID == rec.id,
+                                onPlay: { viewModel.playPreview(for: rec) },
+                                onAdd: { trackToAdd = rec }
+                            )
                         }
                     }
                     .padding(.horizontal, 16)
@@ -242,7 +286,7 @@ struct PlaylistTracksView: View {
 private struct TrackCard: View {
     let track: RecommendedTrack
     let isVisible: Bool
-    let onPlay: () -> Void
+    let onAdd: () -> Void
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -251,6 +295,20 @@ private struct TrackCard: View {
                 ArtworkImage(artwork, width: 500, height: 500)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+            } else if let url = track.artworkURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    default:
+                        LinearGradient(
+                            colors: [Theme.cardGradientStart, Theme.cardGradientEnd],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             } else {
                 LinearGradient(
                     colors: [Theme.cardGradientStart, Theme.cardGradientEnd],
@@ -286,21 +344,10 @@ private struct TrackCard: View {
                         .foregroundColor(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
                 }
-                if track.previewURL != nil {
-                    Button(action: onPlay) {
-                        Label("Play Preview", systemImage: "play.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 10)
-                            .background(Color.white.opacity(0.25))
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.5), lineWidth: 1))
-                    }
-                } else {
-                    Text("No preview available")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.6))
+                Button(action: onAdd) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(.white.opacity(0.9))
                 }
             }
             .padding(20)
@@ -319,7 +366,9 @@ private struct TrackCard: View {
 
 private struct RecommendationRow: View {
     let track: RecommendedTrack
+    let isPlaying: Bool
     let onPlay: () -> Void
+    let onAdd: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -351,19 +400,26 @@ private struct RecommendationRow: View {
 
             Spacer()
 
-            if track.previewURL != nil {
-                Button(action: onPlay) {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(10)
-                        .background(
-                            LinearGradient(
-                                colors: [Theme.cardGradientStart, Theme.cardGradientEnd],
-                                startPoint: .leading, endPoint: .trailing
+            HStack(spacing: 8) {
+                if track.previewURL != nil {
+                    Button(action: onPlay) {
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(
+                                LinearGradient(
+                                    colors: [Theme.cardGradientStart, Theme.cardGradientEnd],
+                                    startPoint: .leading, endPoint: .trailing
+                                )
                             )
-                        )
-                        .clipShape(Circle())
+                            .clipShape(Circle())
+                    }
+                }
+                Button(action: onAdd) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundColor(Theme.cardGradientStart)
                 }
             }
         }
@@ -372,5 +428,69 @@ private struct RecommendationRow: View {
         .background(Theme.rowBackground.opacity(0.85))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.06), radius: 4, x: 0, y: 2)
+    }
+}
+
+// MARK: - Playlist Picker Sheet
+
+@available(macOS 14.0, *)
+private struct PlaylistPickerView: View {
+    let track: RecommendedTrack
+    let currentPlaylistID: String
+    @ObservedObject var viewModel: RecommendationViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var adding = false
+    @State private var resultMessage: String? = nil
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let message = resultMessage {
+                    VStack(spacing: 16) {
+                        Image(systemName: message == "Added!" ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .font(.system(size: 52))
+                            .foregroundColor(message == "Added!" ? .green : .red)
+                        Text(message)
+                            .font(.system(size: 20, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if adding {
+                    ProgressView("Adding…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(viewModel.playlists) { playlist in
+                        Button {
+                            Task {
+                                adding = true
+                                let success = await viewModel.addTrack(track, toPlaylist: playlist, currentPlaylistID: currentPlaylistID)
+                                resultMessage = success ? "Added!" : "Failed to add. Try again."
+                                adding = false
+                                if success {
+                                    try? await Task.sleep(nanoseconds: 900_000_000)
+                                    dismiss()
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "music.note.list")
+                                    .foregroundColor(Theme.cardGradientStart)
+                                Text(playlist.name)
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Add \"\(track.title)\" to…")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            #endif
+        }
     }
 }
