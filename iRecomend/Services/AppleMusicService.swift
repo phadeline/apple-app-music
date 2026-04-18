@@ -111,6 +111,7 @@ actor AppleMusicService {
                 id: playlist.id.rawValue,
                 addToPlaylistID: httpIDs[playlist.name] ?? playlist.id.rawValue,
                 name: playlist.name,
+                artworkURL: playlist.artwork?.url(width: 500, height: 500),
                 genreHints: Self.extractGenreHints(from: playlist.name)
             )
         }
@@ -120,6 +121,7 @@ actor AppleMusicService {
                 id: playlist.id.rawValue,
                 addToPlaylistID: playlist.id.rawValue,
                 name: playlist.name,
+                artworkURL: playlist.artwork?.url(width: 500, height: 500),
                 genreHints: Self.extractGenreHints(from: playlist.name)
             )
         }

@@ -13,6 +13,7 @@ final class RecommendationViewModel: ObservableObject {
     @Published var isLoadingTracks = false
     @Published var loadingRecommendationsFor: Set<String> = []
     @Published var errorMessage: String?
+    @Published var musicAccessDenied = false
     @Published var playingTrackID: String?
 
     private var usedRecommendationIDs: Set<String> = []
@@ -33,8 +34,11 @@ final class RecommendationViewModel: ObservableObject {
 
         do {
             try await musicService.requestAuthorization()
+            musicAccessDenied = false
             playlists = try await musicService.fetchLibraryPlaylists()
             tracks = try await musicService.fetchRecommendations(from: playlists)
+        } catch MusicServiceError.notAuthorized {
+            musicAccessDenied = true
         } catch {
             errorMessage = error.localizedDescription
         }

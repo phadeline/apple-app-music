@@ -63,6 +63,12 @@ struct PlaylistTracksView: View {
         }
         .sheet(item: $trackToAdd) { track in
             PlaylistPickerView(track: track, currentPlaylistID: playlist.id, viewModel: viewModel)
+                #if os(iOS)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                #else
+                .frame(minWidth: 380, minHeight: 400)
+                #endif
         }
         .task {
             await viewModel.loadPlaylistTracks(for: playlist)
@@ -129,25 +135,11 @@ struct PlaylistTracksView: View {
 
     #if os(macOS)
     private var macOSCardSlider: some View {
-        HStack(spacing: 16) {
-            Button {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                    currentIndex = max(0, currentIndex - 1)
-                }
-            } label: {
-                Image(systemName: "chevron.left.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(currentIndex > 0 ? Theme.cardGradientStart : Color.gray.opacity(0.3))
-            }
-            .buttonStyle(.plain)
-            .disabled(currentIndex <= 0)
-
+        ZStack {
             if let track = currentTrack {
                 TrackCard(
                     track: track,
                     isVisible: visibleCards.contains(track.id),
-                    isPlaying: viewModel.playingTrackID == track.id,
-                    onPlay: { viewModel.playPreview(for: track) },
                     onAdd: { trackToAdd = track }
                 )
                 .frame(maxWidth: 400)
@@ -165,20 +157,37 @@ struct PlaylistTracksView: View {
                 }
             }
 
-            Button {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                    currentIndex = min(viewModel.playlistTracks.count - 1, currentIndex + 1)
-                }
-            } label: {
+            HStack {
+                Image(systemName: "chevron.left.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundColor(currentIndex > 0 ? Theme.cardGradientStart : Color.gray.opacity(0.6))
+                    .shadow(radius: 4)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard currentIndex > 0 else { return }
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                            currentIndex -= 1
+                        }
+                    }
+
+                Spacer()
+
                 Image(systemName: "chevron.right.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(currentIndex < viewModel.playlistTracks.count - 1 ? Theme.cardGradientStart : Color.gray.opacity(0.3))
+                    .font(.system(size: 36))
+                    .foregroundColor(currentIndex < viewModel.playlistTracks.count - 1 ? Theme.cardGradientStart : Color.gray.opacity(0.6))
+                    .shadow(radius: 4)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard currentIndex < viewModel.playlistTracks.count - 1 else { return }
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                            currentIndex += 1
+                        }
+                    }
             }
-            .buttonStyle(.plain)
-            .disabled(currentIndex >= viewModel.playlistTracks.count - 1)
+            .padding(.horizontal, 12)
         }
         .frame(height: 340)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: 480)
         .padding(.horizontal, 24)
     }
     #endif
@@ -200,14 +209,26 @@ struct PlaylistTracksView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Because you're listening to")
                             .font(.system(size: 13))
+                            #if os(macOS)
+                            .foregroundColor(.white.opacity(0.7))
+                            #else
                             .foregroundColor(.secondary)
+                            #endif
                         Text("Genre: \"\(genre)\" ")
                             .font(.system(size: 20, weight: .bold))
+                            #if os(macOS)
+                            .foregroundColor(.white)
+                            #else
                             .foregroundColor(.primary)
+                            #endif
                         if totalPages > 1 {
                             Text("Page \(pageIdx + 1) of \(totalPages)")
                                 .font(.system(size: 12))
+                                #if os(macOS)
+                                .foregroundColor(.white.opacity(0.6))
+                                #else
                                 .foregroundColor(.secondary)
+                                #endif
                         }
                     }
                     Spacer()
@@ -447,12 +468,22 @@ private struct PlaylistPickerView: View {
         NavigationStack {
             Group {
                 if let message = resultMessage {
+                    let succeeded = message == "Added!"
                     VStack(spacing: 16) {
-                        Image(systemName: message == "Added!" ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .font(.system(size: 52))
-                            .foregroundColor(message == "Added!" ? .green : .red)
+                            .foregroundColor(succeeded ? .green : .red)
                         Text(message)
                             .font(.system(size: 20, weight: .semibold))
+                        if !succeeded {
+                            Button("Close") { dismiss() }
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 32)
+                                .padding(.vertical, 12)
+                                .background(Theme.cardGradientStart)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if adding {
@@ -464,7 +495,7 @@ private struct PlaylistPickerView: View {
                             Task {
                                 adding = true
                                 let success = await viewModel.addTrack(track, toPlaylist: playlist, currentPlaylistID: currentPlaylistID)
-                                resultMessage = success ? "Added!" : "Failed to add. Try again."
+                                resultMessage = success ? "Added!" : "Addition to playlist failed."
                                 adding = false
                                 if success {
                                     try? await Task.sleep(nanoseconds: 900_000_000)

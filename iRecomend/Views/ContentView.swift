@@ -25,7 +25,27 @@ struct ContentView: View {
                                         .padding()
                                 }
 
-                                if let errorMessage = viewModel.errorMessage {
+                                if viewModel.musicAccessDenied {
+                                    VStack(spacing: 12) {
+                                        Text("Apple Music access was denied.")
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundColor(.red)
+                                        Text("To use iRecomend, please allow access to Apple Music in your device settings.")
+                                            .font(.system(size: 13))
+                                            .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.center)
+                                        #if os(iOS)
+                                        Button("Open Settings") {
+                                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                                UIApplication.shared.open(url)
+                                            }
+                                        }
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(Theme.cardGradientStart)
+                                        #endif
+                                    }
+                                    .padding(.horizontal)
+                                } else if let errorMessage = viewModel.errorMessage {
                                     Text(errorMessage)
                                         .foregroundColor(.red)
                                         .multilineTextAlignment(.center)
