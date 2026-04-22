@@ -14,6 +14,11 @@ private struct RawLibraryPlaylistsResponse: Decodable {
         let attributes: Attributes?
         struct Attributes: Decodable {
             let name: String
+            let artwork: ArtworkData?
+            struct ArtworkData: Decodable {
+                // Template URL e.g. "https://…/{w}x{h}bb.jpg"
+                let url: String?
+            }
         }
     }
 }
@@ -97,24 +102,42 @@ actor AppleMusicService {
         }
     }
 
-    func fetchLibraryPlaylists(limit: Int = 25) async throws -> [PlaylistModel] {
+    func fetchLibraryPlaylists(limit: Int = 100) async throws -> [PlaylistModel] {
         var request = MusicLibraryRequest<Playlist>()
         request.limit = limit
         let response = try await request.response()
 
         #if os(macOS)
         // On macOS the MusicKit IDs are local DB IDs that don't work with the HTTP API.
-        // Fetch HTTP library IDs separately and match by name so addTrack can use them.
-        let httpIDs = (try? await fetchLibraryPlaylistHTTPIDs(limit: limit)) ?? [:]
-        return response.items.map { playlist in
-            PlaylistModel(
+        // Fetch HTTP library IDs and artwork URLs separately and match by name.
+        let httpInfos = (try? await fetchLibraryPlaylistHTTPIDs(limit: limit)) ?? [:]
+        let musicKitPlaylists = response.items.map { playlist -> PlaylistModel in
+            let info = httpInfos[playlist.name]
+            // Prefer the HTTP API artwork URL; fall back to MusicKit artwork if absent.
+            let artworkURL = info?.artworkURL ?? playlist.artwork?.url(width: 500, height: 500)
+            return PlaylistModel(
                 id: playlist.id.rawValue,
-                addToPlaylistID: httpIDs[playlist.name] ?? playlist.id.rawValue,
+                addToPlaylistID: info?.id ?? playlist.id.rawValue,
                 name: playlist.name,
-                artworkURL: playlist.artwork?.url(width: 500, height: 500),
+                artworkURL: artworkURL,
                 genreHints: Self.extractGenreHints(from: playlist.name)
             )
         }
+        // Append any HTTP-only playlists (e.g. "Purchased Music") that MusicKit omits on macOS.
+        let musicKitNames = Set(response.items.map { $0.name })
+        let httpOnlyPlaylists = httpInfos
+            .filter { !musicKitNames.contains($0.key) }
+            .map { name, info in
+                PlaylistModel(
+                    id: info.id,
+                    addToPlaylistID: info.id,
+                    name: name,
+                    artworkURL: info.artworkURL,
+                    genreHints: Self.extractGenreHints(from: name)
+                )
+            }
+            .sorted { $0.name < $1.name }
+        return musicKitPlaylists + httpOnlyPlaylists
         #else
         return response.items.map { playlist in
             PlaylistModel(
@@ -129,17 +152,29 @@ actor AppleMusicService {
     }
 
     #if os(macOS)
-    /// Returns a name → HTTP library playlist ID map using the raw /me/library/playlists endpoint.
-    private func fetchLibraryPlaylistHTTPIDs(limit: Int) async throws -> [String: String] {
+    private struct PlaylistHTTPInfo {
+        let id: String
+        let artworkURL: URL?
+    }
+
+    /// Returns a name → PlaylistHTTPInfo map (HTTP library ID + artwork URL) using the raw /me/library/playlists endpoint.
+    private func fetchLibraryPlaylistHTTPIDs(limit: Int) async throws -> [String: PlaylistHTTPInfo] {
         guard let url = URL(string: "https://api.music.apple.com/v1/me/library/playlists?limit=\(limit)") else {
             return [:]
         }
         let response = try await MusicDataRequest(urlRequest: URLRequest(url: url)).response()
         let decoded = try JSONDecoder().decode(RawLibraryPlaylistsResponse.self, from: response.data)
-        return Dictionary(uniqueKeysWithValues: decoded.data.compactMap { item in
-            guard let name = item.attributes?.name, !name.isEmpty else { return nil }
-            return (name, item.id)
-        })
+        var result: [String: PlaylistHTTPInfo] = [:]
+        for item in decoded.data {
+            guard let name = item.attributes?.name, !name.isEmpty, result[name] == nil else { continue }
+            let artworkURL = item.attributes?.artwork?.url.flatMap { template in
+                URL(string: template
+                    .replacingOccurrences(of: "{w}", with: "500")
+                    .replacingOccurrences(of: "{h}", with: "500"))
+            }
+            result[name] = PlaylistHTTPInfo(id: item.id, artworkURL: artworkURL)
+        }
+        return result
     }
     #endif
 
@@ -168,7 +203,11 @@ actor AppleMusicService {
         playlistRequest.filter(matching: \.id, equalTo: MusicItemID(rawValue: playlistID))
         let playlistResponse = try await playlistRequest.response()
 
-        guard let playlist = playlistResponse.items.first else { return [] }
+        guard let playlist = playlistResponse.items.first else {
+            // MusicKit doesn't know this playlist (e.g. "Purchased Music" — a system playlist
+            // that the typed API omits on macOS). Fall back to the HTTP library tracks endpoint.
+            return try await fetchLibraryTracksHTTP(playlistID: playlistID)
+        }
         let detailed = try await playlist.with([.tracks])
         guard let tracks = detailed.tracks else { return [] }
 
@@ -212,6 +251,17 @@ actor AppleMusicService {
             results.append(contentsOf: batchTracks)
         }
         return results
+    }
+
+    /// HTTP library tracks fallback for system playlists (e.g. "Purchased Music") that
+    /// MusicKit's typed API doesn't return on macOS. These playlists have valid HTTP library IDs.
+    private func fetchLibraryTracksHTTP(playlistID: String) async throws -> [RecommendedTrack] {
+        guard let url = URL(string: "https://api.music.apple.com/v1/me/library/playlists/\(playlistID)/tracks?limit=100") else {
+            return []
+        }
+        let response = try await MusicDataRequest(urlRequest: URLRequest(url: url)).response()
+        let decoded = try JSONDecoder().decode(RawTracksResponse.self, from: response.data)
+        return decoded.data.compactMap { makeRecommendedTrack(from: $0) }
     }
     #endif
 

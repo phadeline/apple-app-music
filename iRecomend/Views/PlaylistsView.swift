@@ -52,6 +52,7 @@ struct PlaylistsView: View {
                                         .padding(24)
                                 }
                                 .clipShape(RoundedRectangle(cornerRadius: 20))
+                                .contentShape(RoundedRectangle(cornerRadius: 20))
                                 .playlistItemShadow()
                             }
                             .buttonStyle(.plain)
