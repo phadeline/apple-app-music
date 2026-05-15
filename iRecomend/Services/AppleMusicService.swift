@@ -231,6 +231,7 @@ actor AppleMusicService {
                            let genres = enriched.genres {
                             genreNames = genres.map { $0.name }
                         }
+                        genreNames = Self.resolveGenreNames(genreNames)
                         return RecommendedTrack(
                             id: song.id.rawValue,
                             title: song.title,
@@ -364,16 +365,21 @@ actor AppleMusicService {
            let genres = song.genres {
             resolvedGenreNames = genres.map { $0.name }
         }
+        resolvedGenreNames = Self.resolveGenreNames(resolvedGenreNames)
         let genreTerm = Self.searchTerm(for: resolvedGenreNames)
         #else
         // Use all genre names for a richer search term so results skew toward the track's style
         let genreTerm = Self.searchTerm(for: track.genreNames)
         #endif
 
-        // Fetch primary (genre + artist) and 2 random international storefronts concurrently
+        // When primary genre is Worldwide, exclude US storefront results and use more
+        // international storefronts so recommendations reflect non-US world music.
+        let isWorldwideGenre = track.genreNames.first?.lowercased() == "worldwide"
+
+        // Fetch primary (genre + artist) and random international storefronts concurrently
         let pageSize = 25
         let intlOffset = (page % 4) * pageSize
-        let intlStorefronts = Array(Self.alternativeStorefronts.shuffled().prefix(2))
+        let intlStorefronts = Array(Self.alternativeStorefronts.shuffled().prefix(isWorldwideGenre ? 6 : 2))
 
         var genreRequest = MusicCatalogSearchRequest(term: genreTerm, types: [Song.self])
         genreRequest.limit = pageSize
@@ -420,13 +426,17 @@ actor AppleMusicService {
         }
 
         // Genre pool: merge primary + international, deduplicate, shuffle, then sort by overlap
-        let primaryGenreTracks = genreResult.songs.map { song in
-            RecommendedTrack(
-                id: song.id.rawValue, title: song.title, artistName: song.artistName,
-                previewURL: song.previewAssets?.first?.url,
-                artworkURL: song.artwork?.url(width: 300, height: 300),
-                genreNames: Array(song.genreNames)
-            )
+        // For worldwide genre, skip US storefront results entirely — only use international tracks.
+        var primaryGenreTracks: [RecommendedTrack] = []
+        if !isWorldwideGenre {
+            primaryGenreTracks = genreResult.songs.map { song in
+                RecommendedTrack(
+                    id: song.id.rawValue, title: song.title, artistName: song.artistName,
+                    previewURL: song.previewAssets?.first?.url,
+                    artworkURL: song.artwork?.url(width: 300, height: 300),
+                    genreNames: Array(song.genreNames)
+                )
+            }
         }
         let artistPickIDs = Set(artistPicks.map { $0.id })
         var seenIDs = Set<String>()
@@ -511,10 +521,20 @@ actor AppleMusicService {
         return Array(results.prefix(10))
     }
 
+    /// If the primary genre is "Worldwide", drops it so the secondary genre is used instead.
+    private static func resolveGenreNames(_ genres: [String]) -> [String] {
+        guard genres.first?.lowercased() == "worldwide", genres.count > 1 else {
+            return genres
+        }
+        return Array(genres.dropFirst())
+    }
+
     /// Converts genre names into a catalog search term, substituting vague genres with
     /// more specific queries that return better results.
     private static func searchTerm(for genreNames: [String]) -> String {
-        let genreMap: [String: String] = [:]
+        let genreMap: [String: String] = [
+            "worldwide": "world music"
+        ]
         let terms = genreNames.map { name -> String in
             genreMap[name.lowercased()] ?? name
         }
