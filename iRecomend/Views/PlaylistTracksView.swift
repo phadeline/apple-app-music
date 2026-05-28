@@ -37,8 +37,17 @@ struct PlaylistTracksView: View {
                 if viewModel.isLoadingTracks {
                     ProgressView("Loading tracks…")
                 } else if viewModel.playlistTracks.isEmpty {
-                    Text("No tracks found.")
-                        .foregroundColor(.secondary)
+                    VStack(spacing: 10) {
+                        Text("No tracks found.")
+                            .foregroundColor(.secondary)
+                        if let msg = viewModel.errorMessage {
+                            Text(msg)
+                                .font(.footnote)
+                                .foregroundColor(.red)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+                        }
+                    }
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
@@ -469,20 +478,49 @@ private struct PlaylistPickerView: View {
             Group {
                 if let message = resultMessage {
                     let succeeded = message == "Added!"
+                    let isPrivacyError = message.lowercased().contains("privacy")
                     VStack(spacing: 16) {
                         Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .font(.system(size: 52))
                             .foregroundColor(succeeded ? .green : .red)
-                        Text(message)
+                        Text(isPrivacyError
+                             ? "Apple Music privacy terms not accepted."
+                             : message)
                             .font(.system(size: 20, weight: .semibold))
+                            .multilineTextAlignment(.center)
+                        if isPrivacyError {
+                            Text("Open the Music app, accept the Apple Music terms, then try again.")
+                                .font(.system(size: 14))
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                            #if os(iOS)
+                            Button("Open Music App") {
+                                if let url = URL(string: "music://") {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 32)
+                            .padding(.vertical, 12)
+                            .background(Theme.cardGradientStart)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            #endif
+                        }
                         if !succeeded {
                             Button("Close") { dismiss() }
                                 .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundColor(isPrivacyError ? Theme.cardGradientStart : .white)
                                 .padding(.horizontal, 32)
                                 .padding(.vertical, 12)
-                                .background(Theme.cardGradientStart)
+                                .background(isPrivacyError ? Color.clear : Theme.cardGradientStart)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(
+                                    isPrivacyError
+                                        ? RoundedRectangle(cornerRadius: 12).stroke(Theme.cardGradientStart, lineWidth: 1.5)
+                                        : nil
+                                )
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -494,8 +532,8 @@ private struct PlaylistPickerView: View {
                         Button {
                             Task {
                                 adding = true
-                                let success = await viewModel.addTrack(track, toPlaylist: playlist, currentPlaylistID: currentPlaylistID)
-                                resultMessage = success ? "Added!" : "Addition to playlist failed."
+                                let (success, errMsg) = await viewModel.addTrack(track, toPlaylist: playlist, currentPlaylistID: currentPlaylistID)
+                                resultMessage = success ? "Added!" : (errMsg ?? "Addition to playlist failed.")
                                 adding = false
                                 if success {
                                     try? await Task.sleep(nanoseconds: 900_000_000)
@@ -514,13 +552,13 @@ private struct PlaylistPickerView: View {
                 }
             }
             .navigationTitle("Add \"\(track.title)\" to…")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
             #endif
         }
     }

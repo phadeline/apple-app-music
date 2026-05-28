@@ -182,11 +182,58 @@ actor AppleMusicService {
         #if os(macOS)
         return try await fetchTracksMacOS(playlistID: playlistID)
         #else
-        let countryCode = try await MusicDataRequest.currentCountryCode
-
-        // Catalog endpoint returns genreNames directly in song attributes.
-        // Works for Apple Music playlists saved to library. Falls back to the
-        // library endpoint (with catalog relationship) for user-created playlists.
+        // Use the MusicKit typed API as primary — it never requires the HTTP user token
+        // or privacy acknowledgement. MusicDataRequest-based endpoints fail with
+        // .privacyAcknowledgementRequired until the token refreshes (needs app restart).
+        var playlistReq = MusicLibraryRequest<Playlist>()
+        playlistReq.filter(matching: \.id, equalTo: MusicItemID(rawValue: playlistID))
+        if let playlist = try? await playlistReq.response().items.first,
+           let detailed = try? await playlist.with([.tracks]),
+           let tracks = detailed.tracks {
+            let songs = tracks.compactMap { entry -> Song? in
+                guard case .song(let song) = entry else { return nil }
+                return song
+            }
+            // MusicKit returns partial Song objects from playlist tracks — genreNames is
+            // often empty. Enrich via catalog search (developer token only, no user token
+            // or privacy acknowledgement required) in batches to avoid timeouts.
+            var results: [RecommendedTrack] = []
+            for batchStart in stride(from: 0, to: songs.count, by: 5) {
+                let batch = songs[batchStart..<min(batchStart + 5, songs.count)]
+                let batchResults = await withTaskGroup(of: RecommendedTrack?.self) { group in
+                    for song in batch {
+                        group.addTask {
+                            var genreNames = Array(song.genreNames)
+                            if genreNames.isEmpty {
+                                var searchReq = MusicCatalogSearchRequest(
+                                    term: "\(song.title) \(song.artistName)",
+                                    types: [Song.self]
+                                )
+                                searchReq.limit = 1
+                                if let match = try? await searchReq.response().songs.first {
+                                    genreNames = Array(match.genreNames)
+                                }
+                            }
+                            return RecommendedTrack(
+                                id: song.id.rawValue,
+                                title: song.title,
+                                artistName: song.artistName,
+                                previewURL: song.previewAssets?.first?.url,
+                                artworkURL: song.artwork?.url(width: 500, height: 500),
+                                genreNames: Self.resolveGenreNames(genreNames)
+                            )
+                        }
+                    }
+                    var out: [RecommendedTrack] = []
+                    for await r in group { if let r { out.append(r) } }
+                    return out
+                }
+                results.append(contentsOf: batchResults)
+            }
+            if !results.isEmpty { return results }
+        }
+        // Fallback to HTTP endpoints once the privacy token is available
+        let countryCode = (try? await MusicDataRequest.currentCountryCode) ?? "us"
         if let tracks = try? await fetchTracksFromCatalog(playlistID: playlistID, countryCode: countryCode),
            !tracks.isEmpty {
             return tracks
@@ -232,6 +279,20 @@ actor AppleMusicService {
                             genreNames = genres.map { $0.name }
                         }
                         genreNames = Self.resolveGenreNames(genreNames)
+
+                        // If still only vague genres, search the catalog for a more specific one
+                        let vagueSet: Set<String> = ["worldwide", "music"]
+                        if genreNames.isEmpty || genreNames.allSatisfy({ vagueSet.contains($0.lowercased()) }) {
+                            var searchReq = MusicCatalogSearchRequest(term: "\(song.title) \(song.artistName)", types: [Song.self])
+                            searchReq.limit = 1
+                            if let match = try? await searchReq.response().songs.first {
+                                let catalogGenres = Self.resolveGenreNames(Array(match.genreNames))
+                                if !catalogGenres.isEmpty && !catalogGenres.allSatisfy({ vagueSet.contains($0.lowercased()) }) {
+                                    genreNames = catalogGenres
+                                }
+                            }
+                        }
+
                         return RecommendedTrack(
                             id: song.id.rawValue,
                             title: song.title,
@@ -486,14 +547,41 @@ actor AppleMusicService {
         "ua", "il", "pk", "bd", "lk", "gh", "tz", "et", "dz", "ma"
     ]
 
-    func addTrack(catalogID: String, toPlaylistID playlistID: String) async throws {
-        guard let url = URL(string: "https://api.music.apple.com/v1/me/library/playlists/\(playlistID)/tracks") else {
+    func addTrack(_ track: RecommendedTrack, toPlaylist playlist: PlaylistModel) async throws {
+        #if !os(macOS)
+        // Native MusicKit path — iOS only; MusicLibrary.shared.add is unavailable on macOS.
+        // Uses MusicCatalogSearchRequest (no user token needed) so it works even before
+        // the user has accepted Apple's personalized music privacy terms.
+        do {
+            var songReq = MusicCatalogSearchRequest(term: "\(track.title) \(track.artistName)", types: [Song.self])
+            songReq.limit = 10
+            let songResp = try await songReq.response()
+            // Prefer exact ID match; fall back to first result for international-storefront tracks
+            let song = songResp.songs.first(where: { $0.id.rawValue == track.id }) ?? songResp.songs.first
+            guard let song else { throw MusicServiceError.invalidRequest }
+
+            var playlistReq = MusicLibraryRequest<Playlist>()
+            playlistReq.limit = 200
+            let playlistResp = try await playlistReq.response()
+            guard let libraryPlaylist = playlistResp.items.first(where: { $0.id.rawValue == playlist.id }) else {
+                throw MusicServiceError.invalidRequest
+            }
+
+            _ = try await MusicLibrary.shared.add(song, to: libraryPlaylist)
+            return
+        } catch {
+            // Fall through to HTTP fallback
+        }
+        #endif
+
+        // HTTP fallback (primary path on macOS, fallback on iOS)
+        guard let url = URL(string: "https://api.music.apple.com/v1/me/library/playlists/\(playlist.addToPlaylistID)/tracks") else {
             throw MusicServiceError.invalidRequest
         }
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["data": [["id": catalogID, "type": "songs"]]]
+        let body: [String: Any] = ["data": [["id": track.id, "type": "songs"]]]
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
         _ = try await MusicDataRequest(urlRequest: urlRequest).response()
     }
@@ -523,10 +611,10 @@ actor AppleMusicService {
 
     /// If the primary genre is "Worldwide", drops it so the secondary genre is used instead.
     private static func resolveGenreNames(_ genres: [String]) -> [String] {
-        guard genres.first?.lowercased() == "worldwide", genres.count > 1 else {
-            return genres
-        }
-        return Array(genres.dropFirst())
+        let vague: Set<String> = ["worldwide", "music"]
+        guard genres.count > 1 else { return genres }
+        let filtered = genres.filter { !vague.contains($0.lowercased()) }
+        return filtered.isEmpty ? genres : filtered
     }
 
     /// Converts genre names into a catalog search term, substituting vague genres with

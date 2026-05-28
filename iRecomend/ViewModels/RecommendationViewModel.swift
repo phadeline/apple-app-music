@@ -138,18 +138,22 @@ final class RecommendationViewModel: ObservableObject {
         return idx < history.count - 1
     }
 
-    func addTrack(_ track: RecommendedTrack, toPlaylist targetPlaylist: PlaylistModel, currentPlaylistID: String? = nil) async -> Bool {
+    func addTrack(_ track: RecommendedTrack, toPlaylist targetPlaylist: PlaylistModel, currentPlaylistID: String? = nil) async -> (Bool, String?) {
         do {
-            try await musicService.addTrack(catalogID: track.id, toPlaylistID: targetPlaylist.addToPlaylistID)
-            // If the user added to the playlist they're currently viewing, append immediately
+            try await musicService.addTrack(track, toPlaylist: targetPlaylist)
+            // Always record locally so navigating to that playlist shows the track
+            // before Apple Music finishes syncing.
+            if !pendingAddedTracks[targetPlaylist.id, default: []].contains(where: { $0.id == track.id }) {
+                pendingAddedTracks[targetPlaylist.id, default: []].append(track)
+            }
+            // Also append immediately if the user is currently viewing the target playlist
             if targetPlaylist.id == currentPlaylistID,
                !playlistTracks.contains(where: { $0.id == track.id }) {
                 playlistTracks.append(track)
-                pendingAddedTracks[targetPlaylist.id, default: []].append(track)
             }
-            return true
+            return (true, nil)
         } catch {
-            return false
+            return (false, error.localizedDescription)
         }
     }
 
